@@ -212,6 +212,34 @@ test("finds agents across sessions and names them by session and tab", function(
     assert(ok, err)
 end)
 
+test("sidekick's picker lines up the path after locations of any length", function()
+    local a = vim.system({"sleep", "31"})
+    local b = vim.system({"sleep", "31"})
+    fixture("list.json", {
+        {session_id = S, session_label = "dots", window_index = 2, window_label = "a", block_id = "block:a", pid = a.pid, cwd = "/tmp/a"},
+        {session_id = S, session_label = "dots", window_index = 3, window_label = "a much longer tab title", block_id = "block:b", pid = b.pid, cwd = "/tmp/b"},
+    })
+    local ui_select = vim.ui.select
+    local rows ---@type string[]?
+    vim.ui.select = function(items, opts)
+        rows = vim.tbl_map(opts.format_item, items)
+    end
+    local ok, err = pcall(function()
+        require("sidekick.cli.ui.select").select({filter = {started = true}, cb = function() end})
+        eq(vim.ui.select ~= ui_select, true, "the stub is back in place")
+        assert(rows and #rows == 2, "rows: " .. vim.inspect(rows))
+        local cols = vim.tbl_map(function(row)
+            return vim.fn.strdisplaywidth(row:match("^(.-)/tmp/"))
+        end, rows)
+        eq(cols[1], cols[2], "path columns of " .. vim.inspect(rows))
+    end)
+    vim.ui.select = ui_select
+    for _, p in ipairs({a, b}) do
+        p:kill(9)
+    end
+    assert(ok, err)
+end)
+
 test("focus switches to the agent's tab", function()
     new_session(AGENT):focus()
     eq(calls(), {{"api", "call", "session.focus_block", vim.json.encode({session_id = S, block_id = AGENT})}}, "calls")
