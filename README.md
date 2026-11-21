@@ -79,6 +79,17 @@ sidekick-rex has no options of its own. Two things matter:
 - Each agent starts in a new Rex tab named after the tool. A second agent of
   the same tool in the same Rex session gets its working directory as a suffix,
   e.g. `claude·my-project`.
+- With `cli.mux.create = "split"`, an agent instead opens in a split beside
+  Neovim's pane, sized by `cli.mux.split.size`. sidekick's `mux.split` has no
+  side, so `cli.win.layout` picks it (`left`, `right`, `top` or `bottom`) when
+  it lies on the `mux.split.vertical` axis; otherwise it opens right or below.
+
+  ```lua
+  cli = {
+    win = { layout = "left" },
+    mux = { enabled = true, backend = "rex", create = "split", split = { size = 0.4 } },
+  }
+  ```
 - sidekick's picker lists agents from every Rex session, labeled with the
   session name and tab position and title, e.g. `work 2:claude`.
 - Showing, toggling or focusing an agent switches Rex to its tab, and to its
@@ -93,7 +104,8 @@ sidekick-rex has no options of its own. Two things matter:
   `State.attach`, `State.with`, `cli.toggle` and `cli.focus`). Each patch checks
   that what it replaces still exists and errors loudly if sidekick changed. The
   plugin tracks sidekick.nvim's `main` branch.
-- `cli.mux.create` is ignored: agents always open in their own Rex tab.
+- `cli.mux.create = "window"` behaves like `"terminal"`: both open a new Rex
+  tab, because Rex can't run inside a Neovim terminal.
 
 ## Development
 

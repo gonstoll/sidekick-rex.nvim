@@ -83,10 +83,38 @@ function M:label()
     return self.tool.name
 end
 
+local SIDES = {left = "left", right = "right", top = "above", bottom = "below"}
+
+-- With `cli.mux.create = "split"`, the agent opens beside Neovim's block instead
+-- of in a new tab. sidekick's mux.split has no side, so `cli.win.layout` picks it.
+---@return string[]
+local function split_args()
+    local mux = Config.cli.mux
+    if mux.create ~= "split" then
+        return {}
+    end
+    local vertical = mux.split.vertical
+    local side = SIDES[Config.cli.win.layout]
+    if not side or (side == "left" or side == "right") ~= vertical then
+        side = vertical and "right" or "below"
+    end
+    -- A size over 1 is cells, as with tmux; Rex takes a percentage of the anchor
+    local size = mux.split.size
+    local ratio = size <= 1 and size * 100 or size / (vertical and vim.o.columns or vim.o.lines) * 100
+    local args = {"--split=" .. side, "--ratio", tostring(math.floor(math.min(math.max(ratio, 1), 99) + 0.5))}
+    if vim.env.REX_BLOCK then
+        vim.list_extend(args, {"-b", vim.env.REX_BLOCK})
+    end
+    return args
+end
+
 ---@return sidekick.cli.terminal.Cmd?
 function M:start()
     local label = self:label()
-    local cmd = {"run", "-s", self.rex_session_id, "-c", self.cwd, "--label", label, "--focus=false", "--json", "--"}
+    local split = split_args()
+    local cmd = {"run", "-s", self.rex_session_id, "-c", self.cwd, "--label", label, "--focus=false", "--json"}
+    vim.list_extend(cmd, split)
+    cmd[#cmd + 1] = "--"
     if self.tool.env and next(self.tool.env) then
         cmd[#cmd + 1] = "env"
         for key, value in pairs(self.tool.env) do
@@ -100,10 +128,14 @@ function M:start()
     if not block_id then
         return
     end
-    rex({"window", "rename", "-s", self.rex_session_id, res.window_id, label})
     self.id = "rex " .. block_id
     self.rex_block_id = block_id
     self.started = true
+    if #split > 0 then
+        Util.info(("Started **%s** in a new Rex split"):format(self.tool.name))
+        return
+    end
+    rex({"window", "rename", "-s", self.rex_session_id, res.window_id, label})
     Util.info(("Started **%s** in a new Rex tab"):format(self.tool.name))
 end
 
