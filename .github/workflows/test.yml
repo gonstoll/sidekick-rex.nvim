@@ -1,0 +1,32 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned so a sidekick release can't break the build without a change here.
+      # Bump it deliberately after running the tests against the new commit.
+      - uses: actions/checkout@v5
+        with:
+          repository: folke/sidekick.nvim
+          ref: 3d80a47e6375f6d647c9695d3afea6fa1b3275df
+          path: deps/sidekick.nvim
+
+      # sidekick needs Neovim 0.11.2 or later
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Run tests
+        run: tests/run.sh
+        env:
+          SIDEKICK_DIR: ${{ github.workspace }}/deps/sidekick.nvim
