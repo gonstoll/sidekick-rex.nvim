@@ -146,6 +146,28 @@ test("a second agent of the same tool gets its cwd as a suffix", function()
     eq(find({"run"})[7], "sleeper·project", "label")
 end)
 
+test("mux.create = split opens beside Neovim, on win.layout's side", function()
+    local Config = require("sidekick.config")
+    local mux, layout = vim.deepcopy(Config.cli.mux), Config.cli.win.layout
+    vim.env.REX_BLOCK = "block:nvim"
+    local ok, err = pcall(function()
+        Config.cli.mux.create = "split"
+        Config.cli.mux.split = {vertical = true, size = 0.4}
+        Config.cli.win.layout = "left"
+        new_session():start()
+        eq(vim.list_slice(find({"run"}), 10, 15), {"--split=left", "--ratio", "40", "-b", "block:nvim", "--"}, "split args")
+        eq(find({"window", "rename"}), nil, "Neovim's tab keeps its name")
+
+        -- A layout on the other axis falls back to sidekick's `vertical`
+        vim.fn.delete(fake .. "/calls")
+        Config.cli.mux.split = {vertical = false, size = 0.3}
+        new_session():start()
+        eq(vim.list_slice(find({"run"}), 10, 12), {"--split=below", "--ratio", "30"}, "fallback side")
+    end)
+    Config.cli.mux, Config.cli.win.layout, vim.env.REX_BLOCK = mux, layout, nil
+    assert(ok, err)
+end)
+
 test("sends text as a paste, including text that starts with a dash", function()
     local text = "- item\nsecond line\n"
     new_session(AGENT):send(text)
