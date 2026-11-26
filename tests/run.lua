@@ -146,26 +146,136 @@ test("a second agent of the same tool gets its cwd as a suffix", function()
     eq(find({"run"})[7], "sleeper·project", "label")
 end)
 
-test("mux.create = split opens beside Neovim, on win.layout's side", function()
+--- Starts an agent with mux.create = "split" and returns the arguments the
+--- split added to `rex run`, between `--json` and `--`. Config, REX_BLOCK and
+--- the editor size are restored afterwards, even when `fn` fails.
+---@param opts {vertical: boolean, size: number, layout?: string, block?: string|false, columns?: integer, lines?: integer, env?: table}
+---@param fn? fun(session: sidekick.cli.muxer.Rex)
+---@return string[]
+local function split_args(opts, fn)
     local Config = require("sidekick.config")
-    local mux, layout = vim.deepcopy(Config.cli.mux), Config.cli.win.layout
-    vim.env.REX_BLOCK = "block:nvim"
-    local ok, err = pcall(function()
+    local saved = {
+        mux = vim.deepcopy(Config.cli.mux),
+        layout = Config.cli.win.layout,
+        block = vim.env.REX_BLOCK,
+        columns = vim.o.columns,
+        lines = vim.o.lines,
+    }
+    vim.fn.delete(fake .. "/calls")
+    local ok, ret = pcall(function()
         Config.cli.mux.create = "split"
-        Config.cli.mux.split = {vertical = true, size = 0.4}
-        Config.cli.win.layout = "left"
-        new_session():start()
-        eq(vim.list_slice(find({"run"}), 10, 15), {"--split=left", "--ratio", "40", "-b", "block:nvim", "--"}, "split args")
-        eq(find({"window", "rename"}), nil, "Neovim's tab keeps its name")
-
-        -- A layout on the other axis falls back to sidekick's `vertical`
-        vim.fn.delete(fake .. "/calls")
-        Config.cli.mux.split = {vertical = false, size = 0.3}
-        new_session():start()
-        eq(vim.list_slice(find({"run"}), 10, 12), {"--split=below", "--ratio", "30"}, "fallback side")
+        Config.cli.mux.split = {vertical = opts.vertical, size = opts.size}
+        Config.cli.win.layout = opts.layout or "right"
+        vim.env.REX_BLOCK = opts.block == nil and "block:nvim" or opts.block or nil
+        vim.o.columns = opts.columns or saved.columns
+        vim.o.lines = opts.lines or saved.lines
+        local session = new_session()
+        session.tool.env = opts.env
+        local started = pcall(session.start, session)
+        session.tool.env = nil
+        assert(started, "start failed")
+        if fn then
+            fn(session)
+        end
+        local run = find({"run"})
+        assert(run, "no rex run, calls: " .. vim.inspect(calls()))
+        eq(run[9], "--json", "split args come after the common ones")
+        return vim.list_slice(run, 10, (vim.fn.index(run, "--")))
     end)
-    Config.cli.mux, Config.cli.win.layout, vim.env.REX_BLOCK = mux, layout, nil
-    assert(ok, err)
+    Config.cli.mux, Config.cli.win.layout, vim.env.REX_BLOCK = saved.mux, saved.layout, saved.block
+    vim.o.columns, vim.o.lines = saved.columns, saved.lines
+    if not ok then
+        error(ret, 0)
+    end
+    return ret
+end
+
+test("mux.create = split opens beside Neovim's block and leaves its tab alone", function()
+    split_args({vertical = true, size = 0.4, layout = "left"}, function(session)
+        eq(find({"run"}), {
+            "run", "-s", S, "-c", "/tmp/project", "--label", "sleeper", "--focus=false", "--json",
+            "--split=left", "--ratio", "40", "-b", "block:nvim",
+            "--", "sleep", "31",
+        }, "run")
+        eq(find({"window", "rename"}), nil, "Neovim's tab keeps its name")
+        eq(session.rex_block_id, "block:new", "block id")
+        eq(session.id, "rex block:new", "session id")
+        eq(session.started, true, "started")
+        assert(vim.wait(500, function()
+            return vim.iter(notes):any(function(n)
+                return n.msg:find("Started **sleeper** in a new Rex split", 1, true) ~= nil
+            end)
+        end), "no split notification, notes: " .. vim.inspect(notes))
+    end)
+end)
+
+test("split side follows win.layout when it lies on mux.split.vertical's axis", function()
+    for _, case in ipairs({
+        {vertical = true, layout = "left", side = "left"},
+        {vertical = true, layout = "right", side = "right"},
+        {vertical = false, layout = "top", side = "above"},
+        {vertical = false, layout = "bottom", side = "below"},
+    }) do
+        local args = split_args({vertical = case.vertical, size = 0.5, layout = case.layout})
+        eq(args[1], "--split=" .. case.side, ("side for layout %s"):format(case.layout))
+    end
+end)
+
+test("split side falls back to right or below when win.layout doesn't fit", function()
+    for _, case in ipairs({
+        -- on the other axis
+        {vertical = true, layout = "top", side = "right"},
+        {vertical = true, layout = "bottom", side = "right"},
+        {vertical = false, layout = "left", side = "below"},
+        {vertical = false, layout = "right", side = "below"},
+        -- not a side at all
+        {vertical = true, layout = "float", side = "right"},
+        {vertical = false, layout = "float", side = "below"},
+    }) do
+        local args = split_args({vertical = case.vertical, size = 0.5, layout = case.layout})
+        eq(args[1], "--split=" .. case.side, ("side for vertical=%s, layout %s"):format(case.vertical, case.layout))
+    end
+end)
+
+test("split size up to 1 is a fraction of Neovim's block, rounded to a percent", function()
+    for _, case in ipairs({
+        {size = 0.5, ratio = "50"},
+        {size = 0.333, ratio = "33"},
+        {size = 0.335, ratio = "34"},
+        {size = 1, ratio = "99"}, -- Rex needs room left for Neovim
+        {size = 0.001, ratio = "1"},
+        {size = 0, ratio = "1"},
+    }) do
+        local args = split_args({vertical = true, size = case.size})
+        eq({args[2], args[3]}, {"--ratio", case.ratio}, ("ratio for size %s"):format(case.size))
+    end
+end)
+
+test("split size over 1 is cells, across columns or lines", function()
+    eq(split_args({vertical = true, size = 50, columns = 200, lines = 40})[3], "25", "50 of 200 columns")
+    eq(split_args({vertical = false, size = 10, columns = 200, lines = 40})[3], "25", "10 of 40 lines")
+    eq(split_args({vertical = true, size = 500, columns = 200})[3], "99", "more cells than columns")
+end)
+
+test("split anchors on Neovim's block only when REX_BLOCK is set", function()
+    eq(split_args({vertical = true, size = 0.4, block = false}), {"--split=right", "--ratio", "40"}, "without REX_BLOCK")
+    eq(split_args({vertical = true, size = 0.4, block = "block:other"}), {
+        "--split=right", "--ratio", "40", "-b", "block:other",
+    }, "with REX_BLOCK")
+end)
+
+test("split keeps the tool's env ahead of its command", function()
+    split_args({vertical = true, size = 0.4, env = {FOO = "bar"}})
+    eq(vim.list_slice(find({"run"}), 15), {"--", "env", "FOO=bar", "sleep", "31"}, "command")
+end)
+
+test("a failed split start leaves the session unstarted", function()
+    fixture("run.json", {})
+    split_args({vertical = true, size = 0.4}, function(session)
+        eq(session.started, nil, "started")
+        eq(session.rex_block_id, nil, "block id")
+        eq(find({"window", "rename"}), nil, "rename")
+    end)
 end)
 
 test("sends text as a paste, including text that starts with a dash", function()
@@ -249,7 +359,14 @@ test("sidekick's picker lines up the path after locations of any length", functi
     local ok, err = pcall(function()
         require("sidekick.cli.ui.select").select({filter = {started = true}, cb = function() end})
         eq(vim.ui.select ~= ui_select, true, "the stub is back in place")
-        assert(rows and #rows == 2, "rows: " .. vim.inspect(rows))
+        assert(rows, "the picker never opened")
+        -- sidekick also lists agents it finds running on this machine, so keep
+        -- only the two from the fixture
+        local all = rows
+        rows = vim.tbl_filter(function(row)
+            return row:match("%ssleeper%s") ~= nil
+        end, rows)
+        assert(#rows == 2, "rows: " .. vim.inspect(all))
         local cols = vim.tbl_map(function(row)
             return vim.fn.strdisplaywidth(row:match("^(.-)/tmp/"))
         end, rows)
